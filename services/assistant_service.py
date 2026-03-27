@@ -398,6 +398,47 @@ def _get_gmail_service(scopes):
     )
 
 
+def _get_gmail_account_email():
+    configured = (os.getenv("GOOGLE_ACCOUNT_EMAIL") or "").strip()
+    if configured:
+        return configured
+
+    try:
+        service = _get_gmail_service(GMAIL_READONLY_SCOPE)
+        profile = service.users().getProfile(userId="me").execute()
+        return (profile.get("emailAddress") or "").strip()
+    except Exception:
+        return ""
+
+
+def _send_reminder_to_gmail(title, when_label, when_iso, description, duration_minutes):
+    recipient = _get_gmail_account_email()
+    if not recipient:
+        raise ValueError("No Gmail account email is available for reminder fallback.")
+
+    subject = f"Reminder fallback: {title}"
+    body_lines = [
+        "Google Calendar was unavailable, so this reminder was saved in email.",
+        "",
+        f"Title: {title}",
+        f"When: {when_label}",
+        f"When (ISO): {when_iso}",
+        f"Duration: {duration_minutes} minutes",
+        f"Description: {description or 'No description'}",
+    ]
+    body = "\n".join(body_lines)
+
+    service = _get_gmail_service(GMAIL_SEND_SCOPE)
+    gmail_message = _build_gmail_message(recipient, subject, body)
+    result = service.users().messages().send(userId="me", body=gmail_message).execute()
+    return {
+        "recipient": recipient,
+        "subject": subject,
+        "message_id": result.get("id", ""),
+        "body": body,
+    }
+
+
 def _get_calendar_service():
     return _build_google_service(
         "calendar",
@@ -864,6 +905,50 @@ def set_reminder(title, when_text, description="", duration_minutes=60):
         except Exception as calendar_exc:
             if not _is_calendar_auth_error(calendar_exc):
                 raise
+
+            try:
+                fallback_email = _send_reminder_to_gmail(
+                    title,
+                    when_label,
+                    parsed_time.isoformat(),
+                    description,
+                    duration_minutes,
+                )
+                export_text = "\n".join(
+                    [
+                        "Reminder saved to Gmail",
+                        f"Title: {title}",
+                        f"When: {when_label}",
+                        f"Duration: {duration_minutes} minutes",
+                        f"Description: {description or 'No description'}",
+                        f"Saved in mailbox: {fallback_email['recipient']}",
+                        f"Reason: {calendar_exc}",
+                    ]
+                )
+                return _success(
+                    "reminder",
+                    "Reminder saved to Gmail",
+                    f'"{title}" is saved for {when_label}. Google Calendar was unavailable, so I saved it in {fallback_email["recipient"]} mail.',
+                    items=[
+                        {
+                            "title": title,
+                            "subtitle": when_label,
+                            "body": (
+                                (description or "No additional description.")
+                                + f"\nSaved in mail: {fallback_email['recipient']}"
+                            ),
+                        }
+                    ],
+                    meta={
+                        "event_link": "",
+                        "reminder_backend": "gmail_fallback",
+                        "fallback_mailbox": fallback_email["recipient"],
+                        "fallback_message_id": fallback_email["message_id"],
+                    },
+                    export_text=export_text,
+                )
+            except Exception:
+                pass
 
             local_reminder = _store_local_reminder(
                 title,

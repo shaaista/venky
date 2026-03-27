@@ -62,6 +62,26 @@ REMINDER_PARSE_SETTINGS = {
     "PREFER_DATES_FROM": "future",
 }
 REMINDER_NOISE_TOKENS = {"to", "for", "on", "at", "in", "me", "a", "an"}
+REMINDER_TIME_COMPONENT_PATTERN = re.compile(
+    r"(?i)\b("
+    r"\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)|"
+    r"\d{1,2}:\d{2}|"
+    r"noon|midnight"
+    r")\b"
+)
+REMINDER_DATE_COMPONENT_PATTERN = re.compile(
+    r"(?i)\b("
+    r"today|tomorrow|tonight|next|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"\d{1,2}(st|nd|rd|th)\b|"
+    r"\d{1,2}[/-]\d{1,2}([/-]\d{2,4})?\b|"
+    r"\d{1,2}\s+"
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|"
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b"
+    r")\b"
+)
 REMINDER_SIGNAL_PATTERN = re.compile(
     r"(?i)("
     r"\d|am|pm|noon|midnight|"
@@ -70,6 +90,14 @@ REMINDER_SIGNAL_PATTERN = re.compile(
     r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
     r")"
 )
+
+
+def _has_time_component(text):
+    return bool(REMINDER_TIME_COMPONENT_PATTERN.search(text or ""))
+
+
+def _has_date_component(text):
+    return bool(REMINDER_DATE_COMPONENT_PATTERN.search(text or ""))
 
 
 def _clean_email_message_hint(text):
@@ -201,16 +229,42 @@ def _extract_reminder_fields(user_input):
     ).strip()
     matches = search_dates(cleaned, settings=REMINDER_PARSE_SETTINGS) or []
 
-    chosen_phrase = ""
-    for phrase, _ in matches:
+    candidates = []
+    for phrase, parsed in matches:
         candidate = " ".join((phrase or "").split()).strip(" ,.-")
         lowered = candidate.lower()
         if not candidate or lowered in REMINDER_NOISE_TOKENS:
             continue
         if not REMINDER_SIGNAL_PATTERN.search(candidate):
             continue
-        chosen_phrase = candidate
-        break
+        candidates.append((candidate, parsed))
+
+    chosen_phrase = ""
+    time_candidate = ""
+    date_candidate = ""
+
+    for candidate, _ in candidates:
+        has_time = _has_time_component(candidate)
+        has_date = _has_date_component(candidate)
+        if has_time and not time_candidate:
+            time_candidate = candidate
+        if has_date and not date_candidate:
+            date_candidate = candidate
+        if has_time and has_date:
+            chosen_phrase = candidate
+            break
+
+    if not chosen_phrase and time_candidate and date_candidate and time_candidate != date_candidate:
+        ampm_match = re.search(
+            rf"(?i)\b{re.escape(time_candidate)}\s*(a\.?m\.?|p\.?m\.?)\b",
+            cleaned,
+        )
+        time_with_meridian = time_candidate
+        if ampm_match:
+            time_with_meridian = f"{time_candidate} {ampm_match.group(1)}"
+
+        clean_date = re.sub(r"(?i)^\s*(on|at|by|for)\s+", "", date_candidate).strip()
+        chosen_phrase = f"{time_with_meridian} on {clean_date}".strip()
 
     if not chosen_phrase:
         direct_phrase_match = re.search(
@@ -222,6 +276,18 @@ def _extract_reminder_fields(user_input):
             if direct_phrase and REMINDER_SIGNAL_PATTERN.search(direct_phrase):
                 chosen_phrase = direct_phrase
 
+    if not chosen_phrase and candidates:
+        def _score(candidate_text):
+            score = 0
+            if _has_time_component(candidate_text):
+                score += 2
+            if _has_date_component(candidate_text):
+                score += 2
+            score += len(candidate_text)
+            return score
+
+        chosen_phrase = max((candidate for candidate, _ in candidates), key=_score)
+
     if not chosen_phrase:
         task_match = re.search(r"(?:to|for)\s+(.+)", cleaned, flags=re.IGNORECASE)
         return {
@@ -229,7 +295,11 @@ def _extract_reminder_fields(user_input):
             "time": "",
         }
 
-    task = re.sub(re.escape(chosen_phrase), " ", cleaned, count=1, flags=re.IGNORECASE)
+    task = cleaned
+    for candidate, _ in candidates:
+        task = re.sub(re.escape(candidate), " ", task, flags=re.IGNORECASE)
+    task = re.sub(r"(?i)\b(a\.?m\.?|p\.?m\.?)\b", " ", task)
+    task = re.sub(re.escape(chosen_phrase), " ", task, flags=re.IGNORECASE)
     task = re.sub(r"(?i)\b(to|for|on|at|by)\b", " ", task)
     task = re.sub(r"\s+", " ", task).strip(" ,.-")
 
