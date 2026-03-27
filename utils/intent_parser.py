@@ -12,7 +12,7 @@ def parse_intent(text):
     if "remind me" in text or "reminder" in text:
         return "reminder"
 
-    if "research" in text or "tell me about" in text or "what is":
+    if "research" in text or "tell me about" in text or "what is" in text:
         return "deepresearch"
 
     if "weather" in text:

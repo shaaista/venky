@@ -5,6 +5,8 @@ chromadb
 tavily-python
 python-dotenv
 streamlit
+Flask
+agentlightning
 requests
 beautifulsoup4
 pandas
@@ -15,10 +17,5 @@ google-api-python-client
 google-auth
 google-auth-oauthlib
 spacy
-python-telegram-bot==20.6
-openai
+dateparser
 httpx
-SpeechRecognition
-pydub
-google-api-python-client
-python-dotenv
